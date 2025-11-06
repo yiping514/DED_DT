@@ -1,7 +1,6 @@
 
 import torch
 from torchmin import minimize as pytorch_minimize
-from scipy.optimize import minimize, Bounds
 import time
 import numpy as np
 import copy
@@ -85,15 +84,7 @@ class GAMMA_MPC():
         # scale past laser power input
         past_laser_power_s = self.TiDE.scaler_x(self.u_past, dim_id=[3])
         
-        
-        # Adjust reference if there is a layer switch
-        # if torch.any(fix_cov_future[6,:]==0):
-        #     is_zero = fix_cov_future[6,:] == 0
-        #     is_zero_int = is_zero.int()
-        #     cut_off_indicator = torch.argmax(is_zero_int)
-        #     print(cut_off_indicator)
-        #     mp_temp_ref_part_s[cut_off_indicator:] = mp_temp_ref_part_s[cut_off_indicator-1]
-
+    
         # optimization
         time1 = time.time()
         solution_s = pytorch_minimize(lambda u:self.obj(u,fix_cov_future_s,past_laser_power_s,fix_cov_past_s, mp_temp_past_part_s,mp_temp_ref_part_s,self.P,self.TiDE),torch.zeros((self.P,1)),method="l-bfgs")                             
@@ -155,72 +146,10 @@ class GAMMA_MPC():
 
         return None
     
-    def MPC_run_one_step_scipy(self):
-        
-        # select the counter part of reference
-        mp_temp_ref = self.ref[self.MPC_counter:self.MPC_counter + self.P] 
-        # scale reference
-        mp_temp_ref_part_s = self.TiDE.scaler_y(mp_temp_ref)
-        # scale past temperature
-        mp_temp_past_part_s = self.TiDE.scaler_y(self.x_past).transpose(1,0)
-        # select past fix covariate
-        fix_cov_past = self.fix_cov_all[self.MPC_counter-self.window:self.MPC_counter,:]
-        # scale past fix covariate
-        fix_cov_past_s = self.TiDE.scaler_x(fix_cov_past,dim_id=[0,1,2,3,4,5,6])
-        # select future fix covariate
-        fix_cov_future = self.fix_cov_all[self.MPC_counter:self.MPC_counter+self.P,:]
-        # scale future fix covariate
-        fix_cov_future_s = self.TiDE.scaler_x(fix_cov_future,dim_id=[0,1,2,3,4,5,6])
-        # scale past laser power input
-        past_laser_power_s = self.TiDE.scaler_x(self.u_past, dim_id = [6])
-        
-        # Adjust reference if there is a layer switch
-        fix_cov_future_ref = self.fix_cov_all[self.MPC_counter:self.MPC_counter+self.P + 5,:]
-       
-        # optimization
-        bounds = Bounds(lb=np.ones(self.P)*-1, ub=np.ones(self.P))
-        solution_s = minimize(lambda u:self.obj(u,fix_cov_future_s,past_laser_power_s,fix_cov_past_s, mp_temp_past_part_s,mp_temp_ref_part_s,P,TiDE),np.zeros((P)),method="slsqp",jac=True, bounds=bounds)
-        # scale solution to original scale
-        if solution_s.success == False:
-            print(f"not success on iteration {self.MPC_counter}")
-            
-        solution_s_torch = torch.tensor(solution_s.x.reshape(-1,1),dtype=torch.float32)
-        solution = self.TiDE.inv_scaler_y(solution_s_torch)
-        
-        # predict MP temp
-        mp_hat_opt_s = self.TiDE.forward(solution_s_torch, fix_cov_future_s, past_laser_power_s, fix_cov_past_s, mp_temp_past_part_s) # predicted MP temp
-        # scale MP temp to original scale
-        mp_hat_opt = self.TiDE.inv_scaler_y(mp_hat_opt_s)
-        
-        # simulate environment
-        x_current = self.GAMMA.run_sim_interval(float(solution[0]))
-        
-        # update past
-        self.x_past[0:-1] = copy.deepcopy(self.x_past[1:])
-        self.x_past[-1] = x_current
-        
-        self.u_past[0:-1] = copy.deepcopy(self.u_past[1:])
-        self.u_past[-1] = solution[0]
-                    
-        self.MPC_counter += 1
-
-        # save data
-        self.x_past_save = torch.concatenate((self.x_past_save,copy.deepcopy(self.x_past[-1].reshape(-1,1))))
-        self.u_past_save = torch.concatenate((self.u_past_save,copy.deepcopy(self.u_past[-1].reshape(-1,1))))
-        self.NN_pred_save = torch.concatenate((self.NN_pred_save,mp_hat_opt.squeeze()[0].reshape(-1,1)))
-        # save data is problematic and need to be checked 
-
-        return None
-    
     
     
     def PID_run_one_step(self):
-        
-        # PID gain
-        # self.PID_Kp = 0.1   #0.1
-        # self.PID_Ki = 0.01  #0.01
-        # self.PID_Kd = 0
-        
+                
         # assign PID in some initialized function
         MPC_counter = self.MPC_counter
         ref = self.ref
